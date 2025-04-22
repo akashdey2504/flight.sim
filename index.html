@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Simple Flight Sim</title>
+    <title>Enhanced Flight Sim</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; }
         canvas { display: block; }
@@ -13,25 +13,30 @@
             width: 100%;
             text-align: center;
             color: white;
+            text-shadow: 1px 1px 2px black; /* Make text more readable */
             font-family: monospace;
             font-size: 16px;
             z-index: 100;
+            display: block;
         }
         #controls {
             position: absolute;
             bottom: 10px;
             left: 10px;
             color: white;
+            text-shadow: 1px 1px 2px black;
             font-family: monospace;
             font-size: 12px;
             background-color: rgba(0,0,0,0.5);
             padding: 5px;
             border-radius: 3px;
+            z-index: 100;
+            display: block;
         }
     </style>
 </head>
 <body>
-    <div id="info">Simple Flight Sim</div>
+    <div id="info">Loading Sim...</div>
     <div id="controls">
         Controls:<br>
         W/S: Speed +/-<br>
@@ -45,28 +50,241 @@
     <script type="importmap">
       {
         "imports": {
-          "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
         }
       }
     </script>
 
     <script type="module">
         import * as THREE from 'three';
+        // We will include the Sky shader code directly below, so no external import needed here after copying.
+        // import { Sky } from 'three/addons/objects/Sky.js'; // Normally would do this
 
-        let scene, camera, renderer;
-        let airplane;
+        // --- Sky Shader Code (Copied from three/examples/jsm/objects/Sky.js) ---
+        // (Code for the Sky shader object - this makes the file long!)
+        const Sky = function () {
+
+            const skyUniforms = {
+                'turbidity': { value: 10 },
+                'rayleigh': { value: 2 },
+                'mieCoefficient': { value: 0.005 },
+                'mieDirectionalG': { value: 0.8 },
+                'sunPosition': { value: new THREE.Vector3() },
+                'up': { value: new THREE.Vector3( 0, 1, 0 ) }
+            };
+
+            // Adjust based on where you copied fragment/vertex shaders if needed
+            // In this single-file version, we define them as strings below.
+
+            const skyVertexShader = `
+                uniform vec3 sunPosition;
+                uniform float rayleigh;
+                uniform float turbidity;
+                uniform float mieCoefficient;
+                uniform vec3 up;
+
+                varying vec3 vWorldPosition;
+                varying vec3 vSunDirection;
+                varying float vSunfade;
+                varying vec3 vBetaR;
+                varying vec3 vBetaM;
+                varying float vSunE;
+
+                // constants for atmospheric scattering
+                const float e = 2.71828182845904523536028747135266249775724709369995;
+                const float pi = 3.141592653589793238462643383279502884197169;
+
+                // wavelength of used light (red, green, blue)
+                // RH variables according to T. Y. Ramanarayanan
+                const vec3 lambda = vec3( 680E-9, 550E-9, 450E-9 );
+                // 3.0 / ( 16.0 * pi * pi )
+                const float totalRayleigh = 0.0000055;
+
+                 // mie constants
+                // K coefficient for the primaries
+                const float v = 4.0;
+                const vec3 K = vec3( 0.686, 0.678, 0.666 );
+                // MieConst = pi * pow( ( 2.0 * pi ) / lambda, vec3( v - 2.0 ) ) * K
+                const vec3 MieConst = vec3( 1.8399918514433978E14, 2.7798023919660528E14, 4.0790479543861094E14 );
+
+                // earth shadow hack
+                // cutoff angle at sunset> = 0.0
+                const float cutoffAngle = pi / 1.95;
+                const float steepness = 1.5;
+                const float EE = 1000.0;
+
+                float sunIntensity( float zenithAngleCos ) {
+                    zenithAngleCos = clamp( zenithAngleCos, -1.0, 1.0 );
+                    return EE * max( 0.0, 1.0 - pow( e, -( ( cutoffAngle - acos( zenithAngleCos ) ) / steepness ) ) );
+                }
+
+                float rayleighPhase( float cosTheta ) {
+                     return ( 3.0 / ( 16.0 * pi ) ) * ( 1.0 + pow( cosTheta, 2.0 ) );
+                    //return ( 1.0 / ( 4.0 * pi ) ) * ( 1.0 + pow( cosTheta, 2.0 ) ); // T. Y. Ramanarayanan
+                }
+
+                float hgPhase( float cosTheta, float g ) {
+                    float g2 = pow( g, 2.0 );
+                    float inverse = 1.0 / pow( 1.0 - 2.0 * g * cosTheta + g2, 1.5 );
+                    return ( 1.0 / ( 4.0 * pi ) ) * ( ( 1.0 - g2 ) * inverse );
+                }
+
+                void main() {
+
+                    vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+                    vWorldPosition = worldPosition.xyz;
+
+                    gl_Position = projectionMatrix * viewMatrix * worldPosition;
+                    gl_Position.z = gl_Position.w; // set z to camera.far
+
+                    vSunDirection = normalize( sunPosition );
+
+                    vSunE = sunIntensity( dot( vSunDirection, up ) );
+
+                    vSunfade = 1.0 - clamp( 1.0 - exp( ( sunPosition.y / 450000.0 ) ), 0.0, 1.0 );
+
+                    float rayleighCoefficient = rayleigh - ( 1.0 * ( 1.0 - vSunfade ) );
+
+                    // extinction (absorbtion + out scattering)
+                    // rayleigh coefficients
+                    vBetaR = totalRayleigh * pow( lambda, vec3( -4.0 ) ) * rayleighCoefficient;
+
+                    // mie coefficients
+                    vBetaM = MieConst * mieCoefficient;
+
+                }`
+            ;
+            const skyFragmentShader = `
+                varying vec3 vWorldPosition;
+                varying vec3 vSunDirection;
+                varying float vSunfade;
+                varying vec3 vBetaR;
+                varying vec3 vBetaM;
+                varying float vSunE;
+
+                uniform float mieDirectionalG;
+                uniform vec3 up;
+
+                const float pi = 3.141592653589793238462643383279502884197169;
+
+                const float n = 1.0003; // refractive index of air
+                const float N = 2.545E25; // number of molecules per unit volume for air at 288.15K and 1013.25mb
+                const float pn = 0.035; // depolatization factor for standard air
+
+                // wavelength of used light (red, green, blue)
+                const vec3 lambda = vec3( 680E-9, 550E-9, 450E-9 );
+
+                 // optical length at zenith for molecules
+                const float rayleighZenithLength = 8.4E3;
+                const float mieZenithLength = 1.25E3;
+                // 66 arc seconds -> degrees, and the cosine of that
+                const float sunAngularDiameterCos = 0.9999566769;
+
+                // 3.0 / ( 16.0 * pi )
+                const float THREE_OVER_SIXTEENPI = 0.05968310365946075;
+                // 1.0 / ( 4.0 * pi )
+                const float ONE_OVER_FOURPI = 0.07957747154594767;
+
+                float rayleighPhase( float cosTheta ) {
+                    return THREE_OVER_SIXTEENPI * ( 1.0 + pow( cosTheta, 2.0 ) );
+                }
+
+                float hgPhase( float cosTheta, float g ) {
+                    float g2 = pow( g, 2.0 );
+                    float inverse = 1.0 / pow( 1.0 - 2.0 * g * cosTheta + g2, 1.5 );
+                    return ONE_OVER_FOURPI * ( ( 1.0 - g2 ) * inverse );
+                }
+
+
+                void main() {
+                // Relative optical mass
+                vec3 viewDirection = normalize( vWorldPosition - cameraPosition );
+                float cosViewSunAngle = dot( viewDirection, vSunDirection );
+
+                // Approximate per fragment optical mass calculation
+                float sR = rayleighZenithLength;
+                float sM = mieZenithLength;
+
+                 // Combined extinction factor
+                vec3 Fex = exp( -( vBetaR * sR + vBetaM * sM ) );
+
+                // In-scattering
+                float cosTheta = dot( viewDirection, vSunDirection );
+
+                float rPhase = rayleighPhase( cosTheta * 0.5 + 0.5 );
+                vec3 betaRTheta = vBetaR * rPhase;
+
+                float mPhase = hgPhase( cosTheta, mieDirectionalG );
+                vec3 betaMTheta = vBetaM * mPhase;
+
+                 vec3 Lin = pow( vSunE * ( ( betaRTheta + betaMTheta ) / ( vBetaR + vBetaM ) ) * ( 1.0 - Fex ), vec3( 1.5 ) );
+                 Lin *= mix( vec3( 1.0 ), pow( vSunE * ( ( betaRTheta + betaMTheta ) / ( vBetaR + vBetaM ) ) * Fex, vec3( 1.0 / 2.0 ) ), clamp( pow( 1.0 - dot( up, vSunDirection ), 5.0 ), 0.0, 1.0 ) );
+
+
+                // Composition + Sun
+                float sunAmount = max( 0.0, dot( viewDirection, vSunDirection ) );
+                vec3 sunColor = pow( vSunE * Fex * ( 1.0 + smoothstep( sunAngularDiameterCos, 1.0, sunAmount ) ), vec3( 1.5 ) );
+
+
+                vec3 L0 = vec3( 0.1 ) * Fex; // Ambient sky color
+
+                // Adjust luminance based on sun position
+                float sundisk = smoothstep( sunAngularDiameterCos, 1.0, dot( viewDirection, vSunDirection ) );
+                L0 += ( vSunE * 19000.0 * Fex ) * sundisk;
+
+
+                 vec3 texColor = ( Lin + L0 ) * 0.04 + vec3( 0.0, 0.0003, 0.00075 ); // Adjusted base color and scaling
+
+
+                vec3 retColor = pow( texColor, vec3( 1.0 / ( 1.2 + ( 1.2 * vSunfade ) ) ) ); // Tone mapping
+
+                 gl_FragColor = vec4( retColor, 1.0 );
+
+                #include <tonemapping_fragment>
+                #include <colorspace_fragment>
+
+                }`;
+
+            var skyMaterial = new THREE.ShaderMaterial({
+                name: 'SkyShader',
+                uniforms: THREE.UniformsUtils.clone(skyUniforms),
+                vertexShader: skyVertexShader,
+                fragmentShader: skyFragmentShader,
+                side: THREE.BackSide,
+                depthWrite: false
+            });
+
+            THREE.Mesh.call( this, new THREE.BoxGeometry( 1, 1, 1 ), skyMaterial ); // Use BoxGeometry for sky sphere
+            this.geometry.deleteAttribute('normal'); // No normals needed
+            this.geometry.deleteAttribute('uv');
+            this.scale.setScalar( 450000 ); // Large scale for sky dome
+
+        };
+
+        Sky.prototype = Object.create( THREE.Mesh.prototype );
+        // --- End Sky Shader Code ---
+
+
+        // --- Game Code ---
+        let scene, camera, renderer, sky, sun;
+        let airplane, propeller;
         let clock;
 
-        // Movement variables
-        let speed = 0.5;
-        const maxSpeed = 2.0;
-        const minSpeed = 0.1;
-        const acceleration = 0.01;
-        const deceleration = 0.02; // Faster deceleration
+        // Movement & Physics variables
+        const worldBounds = { x: 500, yMin: -8, yMax: 300, z: 500 }; // Min Y slightly below ground
+        let velocity = new THREE.Vector3();
+        const maxSpeed = 2.5; // Slightly increased max speed
+        const minSpeed = 0.2; // Slightly increased min speed
+        let currentSpeedFactor = 0.5; // Normalized speed factor (0 to 1)
+        const acceleration = 0.015;
+        const deceleration = 0.02; // Drag factor when not accelerating
+        const gravity = 0.008; // Basic gravity effect
 
-        const rollSpeed = Math.PI / 90; // Radians per frame (~2 deg)
-        const pitchSpeed = Math.PI / 120; // Radians per frame (~1.5 deg)
-        const yawSpeed = Math.PI / 180; // Radians per frame (~1 deg)
+        const rollSpeed = Math.PI / 70; // Increased roll speed
+        const pitchSpeedFactor = 0.015; // How much pitch affects vertical velocity
+        const yawSpeed = Math.PI / 120; // Increased yaw speed
+        const turnInfluenceFromRoll = 0.1; // How much roll affects yaw (0 to 1)
 
         // Input state
         const keys = {
@@ -75,227 +293,426 @@
         };
 
         function init() {
-            // Scene
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x87CEEB); // Sky blue
-            scene.fog = new THREE.Fog(0x87CEEB, 100, 500);
+            try {
+                console.log("Initializing Enhanced Flight Sim...");
 
-            // Clock
-            clock = new THREE.Clock();
+                // Scene
+                scene = new THREE.Scene();
+                // scene.background = new THREE.Color(0x87CEEB); // Replaced by Sky
+                scene.fog = new THREE.Fog(0xadd8e6, 150, 600); // Light blue fog, adjusted range
 
-            // Camera
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            // Initial camera position will be set relative to the plane later
+                // Clock
+                clock = new THREE.Clock();
 
-            // Renderer
-            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            // Enable shadows (optional, adds depth)
-            // renderer.shadowMap.enabled = true;
+                // Camera
+                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 20000); // Increased far plane for sky
 
-            // Lighting
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-            scene.add(ambientLight);
+                // Renderer
+                const canvas = document.getElementById('gameCanvas');
+                if (!canvas) throw new Error("Canvas element #gameCanvas not found!");
 
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
-            directionalLight.position.set(50, 100, 50);
-            // directionalLight.castShadow = true; // Enable shadows for this light
-            scene.add(directionalLight);
-            // Configure shadow properties if using shadows
-            // directionalLight.shadow.mapSize.width = 1024;
-            // directionalLight.shadow.mapSize.height = 1024;
-            // directionalLight.shadow.camera.near = 0.5;
-            // directionalLight.shadow.camera.far = 500;
+                renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.shadowMap.enabled = true; // Enable Shadows
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Softer shadows
+                renderer.toneMapping = THREE.ACESFilmicToneMapping; // Better colors with sky
+                renderer.toneMappingExposure = 0.6; // Adjust exposure
 
-            // Ground Plane
-            const groundGeometry = new THREE.PlaneGeometry(1000, 1000);
-            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22, side: THREE.DoubleSide }); // Forest green
-            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-            ground.rotation.x = -Math.PI / 2; // Rotate flat
-            ground.position.y = -10; // Position below the plane start
-            // ground.receiveShadow = true; // Allow ground to receive shadows
-            scene.add(ground);
+                // Lighting
+                // const ambientLight = new THREE.AmbientLight(0xffffff, 0.3); // Reduced ambient, replaced by Hemisphere
+                // scene.add(ambientLight);
+                const hemiLight = new THREE.HemisphereLight(0xadd8e6, 0xaaaaaa, 0.8); // Sky color, ground color, intensity
+                scene.add(hemiLight);
 
-            // Airplane Model (Simple)
-            airplane = createAirplane();
-            airplane.position.set(0, 0, 0); // Start at origin
-            scene.add(airplane);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5); // Slightly stronger sun
+                directionalLight.position.set(50, 100, 30);
+                directionalLight.castShadow = true; // Enable shadows for this light
+                directionalLight.shadow.mapSize.width = 1024; // Shadow map resolution
+                directionalLight.shadow.mapSize.height = 1024;
+                directionalLight.shadow.camera.near = 0.5;
+                directionalLight.shadow.camera.far = 500;
+                // Define shadow frustum size (needs adjustment based on scene scale)
+                directionalLight.shadow.camera.left = -100;
+                directionalLight.shadow.camera.right = 100;
+                directionalLight.shadow.camera.top = 100;
+                directionalLight.shadow.camera.bottom = -100;
+                scene.add(directionalLight);
+                // Optional: Add a light helper
+                // const dirLightHelper = new THREE.DirectionalLightHelper(directionalLight, 10);
+                // scene.add(dirLightHelper);
 
-            // Event Listeners
-            window.addEventListener('keydown', handleKeyDown);
-            window.addEventListener('keyup', handleKeyUp);
-            window.addEventListener('resize', onWindowResize);
 
-            // Start animation loop
-            animate();
+                // Ground Plane
+                const groundGeometry = new THREE.PlaneGeometry(worldBounds.x * 2.5, worldBounds.z * 2.5); // Larger ground
+                // More interesting ground material
+                const groundMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x556B2F, // Dark Olive Green
+                    roughness: 0.9, // Less shiny
+                    metalness: 0.1,
+                    side: THREE.DoubleSide
+                 });
+                const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+                ground.rotation.x = -Math.PI / 2;
+                ground.position.y = -10;
+                ground.receiveShadow = true; // Allow ground to receive shadows
+                scene.add(ground);
+                console.log("Ground added.");
+
+                // Sky
+                sky = new Sky();
+                scene.add(sky);
+                sun = new THREE.Vector3();
+
+                // Set Sky parameters
+                const effectController = {
+                    turbidity: 10,
+                    rayleigh: 2,
+                    mieCoefficient: 0.005,
+                    mieDirectionalG: 0.8,
+                    elevation: 15, // Angle of sun (0 = sunrise/set, 90 = noon)
+                    azimuth: 180, // Direction of sun (0 = north, 180 = south)
+                    exposure: renderer.toneMappingExposure
+                };
+
+                function updateSun() {
+                    const phi = THREE.MathUtils.degToRad( 90 - effectController.elevation );
+                    const theta = THREE.MathUtils.degToRad( effectController.azimuth );
+                    sun.setFromSphericalCoords( 1, phi, theta );
+                    sky.material.uniforms[ 'sunPosition' ].value.copy( sun );
+                    // Also update directional light to match sun direction
+                    directionalLight.position.copy(sun).multiplyScalar(100); // Place light source far away in sun direction
+
+                    renderer.toneMappingExposure = effectController.exposure;
+                }
+                updateSun(); // Initialize sun position
+
+                // Airplane Model (Improved)
+                airplane = createImprovedAirplane();
+                if (!airplane) throw new Error("Failed to create airplane!");
+                airplane.position.set(0, 0, 0); // Start at origin, slightly above ground
+                scene.add(airplane);
+                console.log("Airplane added.");
+
+                // Event Listeners
+                window.addEventListener('keydown', handleKeyDown);
+                window.addEventListener('keyup', handleKeyUp);
+                window.addEventListener('resize', onWindowResize);
+                console.log("Event listeners added.");
+
+                // Start animation loop
+                console.log("Starting animation loop...");
+                animate();
+
+            } catch (error) {
+                console.error("Error during initialization:", error);
+                 document.getElementById('info').textContent = `Error: ${error.message}`;
+                 document.getElementById('info').style.color = 'red';
+            }
         }
 
-        function createAirplane() {
-            const airplaneGroup = new THREE.Group();
+        function createImprovedAirplane() {
+             try {
+                console.log("Creating improved airplane model...");
+                const airplaneGroup = new THREE.Group();
 
-            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc }); // Grey
-            const wingMaterial = new THREE.MeshStandardMaterial({ color: 0xaaaaaa }); // Darker Grey
-            const tailMaterial = new THREE.MeshStandardMaterial({ color: 0x999999 }); // Even Darker Grey
+                const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xsilver, roughness: 0.6, metalness: 0.4 });
+                const wingMaterial = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.7, metalness: 0.3 });
+                const tailMaterial = new THREE.MeshStandardMaterial({ color: 0x999999, roughness: 0.7, metalness: 0.3 });
+                const cockpitMaterial = new THREE.MeshStandardMaterial({ color: 0x6a8caf, roughness: 0.1, metalness: 0.2, transparent: true, opacity: 0.5 });
+                const propellerMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5, metalness: 0.5 });
 
-            // Body (Fuselage) - Longer Box
-            const bodyGeometry = new THREE.BoxGeometry(4, 0.8, 1);
-            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-            // body.castShadow = true;
-            airplaneGroup.add(body);
 
-            // Wings - Flat Boxes
-            const wingGeometry = new THREE.BoxGeometry(1.5, 0.15, 6); // width, height, length (span)
-            const leftWing = new THREE.Mesh(wingGeometry, wingMaterial);
-            leftWing.position.set(-1.5, 0, 0); // Position relative to body center
-            // leftWing.castShadow = true;
-            airplaneGroup.add(leftWing);
+                // Body (Fuselage) - Cylinder
+                const bodyLength = 4.5;
+                const bodyRadius = 0.4;
+                const bodyGeometry = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.8, bodyLength, 16); // Tapered slightly
+                const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+                body.rotation.z = Math.PI / 2; // Rotate to lie flat along X axis
+                body.castShadow = true;
+                airplaneGroup.add(body);
 
-            const rightWing = new THREE.Mesh(wingGeometry, wingMaterial);
-            rightWing.position.set(1.5, 0, 0); // Position relative to body center
-            // rightWing.castShadow = true;
-            airplaneGroup.add(rightWing);
+                 // Cockpit Area - Sphere segment or modified box
+                const cockpitGeometry = new THREE.BoxGeometry(1.2, 0.6, 0.7);
+                const cockpit = new THREE.Mesh(cockpitGeometry, cockpitMaterial);
+                cockpit.position.set(bodyLength * 0.25, bodyRadius * 0.5, 0); // Position towards front, slightly up
+                cockpit.castShadow = true; // Can cast shadow, though less noticeable when transparent
+                airplaneGroup.add(cockpit);
 
-            // Tail Fin (Vertical Stabilizer) - Smaller Box
-            const tailFinGeometry = new THREE.BoxGeometry(0.2, 1.5, 0.8);
-            const tailFin = new THREE.Mesh(tailFinGeometry, tailMaterial);
-            tailFin.position.set(-2.1, 0.7, 0); // Position at the back and slightly up
-            // tailFin.castShadow = true;
-            airplaneGroup.add(tailFin);
 
-            // Horizontal Stabilizer - Flat Box
-            const hStabGeometry = new THREE.BoxGeometry(0.5, 0.1, 2.5);
-            const hStab = new THREE.Mesh(hStabGeometry, tailMaterial);
-            hStab.position.set(-2.1, 0.2, 0); // Position at the back
-            // hStab.castShadow = true;
-            airplaneGroup.add(hStab);
+                // Wings - Thicker, slightly swept Boxes
+                const wingLength = 3.5; // Span per wing
+                const wingWidth = 1.2; // Chord
+                const wingThickness = 0.15;
+                const wingGeometry = new THREE.BoxGeometry(wingWidth, wingThickness, wingLength * 2); // One piece for simplicity
+                const wings = new THREE.Mesh(wingGeometry, wingMaterial);
+                // wings.rotation.x = THREE.MathUtils.degToRad(-2); // Slight dihedral angle upwards
+                wings.position.set(0, 0, 0); // Centered on body
+                wings.castShadow = true;
+                airplaneGroup.add(wings);
 
-            // Add a helper point slightly in front for the camera to look at
-            const lookTarget = new THREE.Object3D();
-            lookTarget.position.set(0, 0, -5); // 5 units in front of the plane's nose
-            airplaneGroup.add(lookTarget);
-            airplaneGroup.userData.lookTarget = lookTarget; // Store reference
 
-             // Add a helper point behind and above for the camera position
-            const cameraTarget = new THREE.Object3D();
-            cameraTarget.position.set(0, 3, 8); // Behind and above the plane
-            airplaneGroup.add(cameraTarget);
-            airplaneGroup.userData.cameraTarget = cameraTarget; // Store reference
+                // Tail Fin (Vertical Stabilizer) - Reshaped Box
+                const tailFinGeometry = new THREE.BoxGeometry(1.0, 1.2, 0.15); // width(chord), height, thickness
+                const tailFin = new THREE.Mesh(tailFinGeometry, tailMaterial);
+                tailFin.position.set(-bodyLength * 0.55, bodyRadius + 0.6, 0); // Position at the back and up
+                 tailFin.rotation.y = Math.PI/2; // Align width with X axis
+                tailFin.castShadow = true;
+                airplaneGroup.add(tailFin);
 
-            return airplaneGroup;
+                // Horizontal Stabilizer - Flat Box
+                const hStabLength = 1.2; // Span per side
+                const hStabWidth = 0.8; // Chord
+                const hStabGeometry = new THREE.BoxGeometry(hStabWidth, 0.1, hStabLength * 2);
+                const hStab = new THREE.Mesh(hStabGeometry, tailMaterial);
+                hStab.position.set(-bodyLength * 0.55, bodyRadius * 0.8, 0); // Position at the back
+                hStab.castShadow = true;
+                airplaneGroup.add(hStab);
+
+                // Propeller (Simple)
+                const propBladeGeometry = new THREE.BoxGeometry(0.1, 0.8, 0.05);
+                propeller = new THREE.Group(); // Group to rotate blades
+                const blade1 = new THREE.Mesh(propBladeGeometry, propellerMaterial);
+                blade1.position.y = 0.4;
+                const blade2 = new THREE.Mesh(propBladeGeometry, propellerMaterial);
+                blade2.rotation.z = Math.PI / 2;
+                blade2.position.x = 0.4;
+                 const blade3 = new THREE.Mesh(propBladeGeometry, propellerMaterial);
+                blade3.position.y = -0.4;
+                 const blade4 = new THREE.Mesh(propBladeGeometry, propellerMaterial);
+                blade4.rotation.z = Math.PI / 2;
+                blade4.position.x = -0.4;
+
+                propeller.add(blade1, blade2, blade3, blade4);
+                propeller.position.set(bodyLength * 0.5 + 0.1, 0, 0); // At the front nose
+                propeller.castShadow = true;
+                airplaneGroup.add(propeller);
+
+
+                // Camera Targets (Adjusted for new model)
+                const lookTarget = new THREE.Object3D();
+                lookTarget.position.set(15, 1, 0); // Further in front
+                airplaneGroup.add(lookTarget);
+                airplaneGroup.userData.lookTarget = lookTarget;
+
+                const cameraTarget = new THREE.Object3D();
+                cameraTarget.position.set(-10, 4, 0); // Further behind and slightly higher
+                airplaneGroup.add(cameraTarget);
+                airplaneGroup.userData.cameraTarget = cameraTarget;
+
+                // Initial Orientation: Rotate group so +X is forward
+                // (Model parts were built assuming +X is forward)
+                // airplaneGroup.rotation.y = -Math.PI / 2; // No longer needed if built along X
+
+                console.log("Airplane model created.");
+                return airplaneGroup;
+
+            } catch (error) {
+                 console.error("Error creating airplane model:", error);
+                 return null;
+            }
         }
 
 
         function handleKeyDown(event) {
-            if (keys.hasOwnProperty(event.key)) {
-                keys[event.key] = true;
-            } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-                 keys[event.key] = true;
-            }
+            const key = event.key.toLowerCase();
+            if (keys.hasOwnProperty(key)) keys[key] = true;
+            else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') keys[event.key] = true;
         }
 
         function handleKeyUp(event) {
-            if (keys.hasOwnProperty(event.key)) {
-                keys[event.key] = false;
-            } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-                 keys[event.key] = false;
-            }
+             const key = event.key.toLowerCase();
+             if (keys.hasOwnProperty(key)) keys[key] = false;
+             else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') keys[event.key] = false;
         }
 
         function updateMovement(deltaTime) {
-            // --- Throttle Control ---
-            if (keys.w) {
-                speed += acceleration;
-                speed = Math.min(speed, maxSpeed);
-            } else if (keys.s) {
-                speed -= deceleration; // Use faster deceleration
-                speed = Math.max(speed, minSpeed);
-            } else {
-                 // Gradually decrease speed if no throttle input (like air resistance)
-                 // You could make this more sophisticated
-                 // speed *= 0.995;
-                 // speed = Math.max(speed, minSpeed);
+           try {
+                if (!airplane) return;
+
+                const forward = new THREE.Vector3(1, 0, 0); // Assuming +X is forward
+                forward.applyQuaternion(airplane.quaternion);
+                const up = new THREE.Vector3(0, 1, 0);
+                up.applyQuaternion(airplane.quaternion);
+                 const right = new THREE.Vector3(0, 0, -1); // Assuming +Z is right initially
+                right.applyQuaternion(airplane.quaternion);
+
+
+                // --- Throttle Control ---
+                if (keys.w) {
+                    currentSpeedFactor += acceleration;
+                } else if (keys.s) {
+                    currentSpeedFactor -= acceleration * 1.5; // Faster deceleration
+                } else {
+                    // Apply drag when not accelerating/decelerating actively
+                    currentSpeedFactor *= (1.0 - deceleration);
+                }
+                currentSpeedFactor = THREE.MathUtils.clamp(currentSpeedFactor, 0, 1.0);
+                const actualSpeed = THREE.MathUtils.lerp(minSpeed, maxSpeed, currentSpeedFactor);
+
+                // --- Reset Velocity influences from previous frame ---
+                velocity.set(0, 0, 0);
+
+                // --- Apply Gravity ---
+                velocity.y -= gravity;
+
+                // --- Flight Controls (Affect Velocity / Orientation) ---
+                const localX = new THREE.Vector3(1, 0, 0); // Plane's Forward Axis
+                const localY = new THREE.Vector3(0, 1, 0); // Plane's Up Axis
+                const localZ = new THREE.Vector3(0, 0, 1); // Plane's Right Axis (using right-hand rule)
+
+                // Roll (A/D) - Rotation around LOCAL X-axis (forward)
+                let rollAmount = 0;
+                if (keys.a) { // Roll Left
+                    airplane.rotateOnAxis(localX, rollSpeed);
+                    rollAmount = rollSpeed;
+                }
+                if (keys.d) { // Roll Right
+                     airplane.rotateOnAxis(localX, -rollSpeed);
+                    rollAmount = -rollSpeed;
+                }
+
+                // Pitch (ArrowUp/Down) - Affects vertical velocity & rotation around LOCAL Z-axis (right)
+                if (keys.ArrowDown) { // Pull back (Nose Up) -> Increase vertical velocity
+                     airplane.rotateOnAxis(localZ, -pitchSpeedFactor * 2.5); // Rotate Nose Up
+                     velocity.addScaledVector(up, pitchSpeedFactor * actualSpeed * 1.5); // Add upward force based on speed
+                }
+                if (keys.ArrowUp) { // Push forward (Nose Down) -> Decrease vertical velocity
+                     airplane.rotateOnAxis(localZ, pitchSpeedFactor * 2.5); // Rotate Nose Down
+                     velocity.addScaledVector(up, -pitchSpeedFactor * actualSpeed * 1.5); // Add downward force
+                }
+
+                 // Yaw (Q/E) - Rotation around LOCAL Y-axis (up)
+                 let yawAmount = 0;
+                if (keys.q) { // Yaw Left
+                     airplane.rotateOnAxis(localY, yawSpeed);
+                     yawAmount = yawSpeed;
+                }
+                if (keys.e) { // Yaw Right
+                    airplane.rotateOnAxis(localY, -yawSpeed);
+                    yawAmount = -yawSpeed;
+                }
+
+                // --- Optional: Roll Influence on Turn ---
+                // Make banked turns feel slightly more natural by adding yaw based on roll
+                // const rollAngle = // Get roll angle (more complex, requires Euler angles or matrix decomposition)
+                // airplane.rotateOnAxis(localY, -rollAmount * turnInfluenceFromRoll * actualSpeed);
+
+
+                // --- Apply Forward Movement based on Speed ---
+                velocity.addScaledVector(forward, actualSpeed);
+
+
+                // --- Update Airplane Position ---
+                airplane.position.addScaledVector(velocity, deltaTime * 60); // Scale velocity by time (approx 60fps)
+
+
+                // --- Boundary Checks ---
+                if (airplane.position.x > worldBounds.x) {
+                    airplane.position.x = worldBounds.x;
+                    velocity.x = Math.min(0, velocity.x); // Stop outward movement
+                } else if (airplane.position.x < -worldBounds.x) {
+                    airplane.position.x = -worldBounds.x;
+                    velocity.x = Math.max(0, velocity.x);
+                }
+                if (airplane.position.z > worldBounds.z) {
+                    airplane.position.z = worldBounds.z;
+                     velocity.z = Math.min(0, velocity.z);
+                } else if (airplane.position.z < -worldBounds.z) {
+                    airplane.position.z = -worldBounds.z;
+                    velocity.z = Math.max(0, velocity.z);
+                }
+                 if (airplane.position.y > worldBounds.yMax) {
+                    airplane.position.y = worldBounds.yMax;
+                    velocity.y = Math.min(0, velocity.y);
+                }
+                // Ground Collision (Allow resting slightly below y=0 if needed)
+                if (airplane.position.y < worldBounds.yMin + 0.5) {
+                    airplane.position.y = worldBounds.yMin + 0.5;
+                    velocity.y = Math.max(0, velocity.y); // Stop downward movement
+                     // Dampen other velocities on ground contact
+                    velocity.x *= 0.9;
+                    velocity.z *= 0.9;
+                    currentSpeedFactor *= 0.95; // Lose speed on ground
+                }
+
+
+                // --- Update Camera ---
+                if (airplane.userData.cameraTarget && airplane.userData.lookTarget) {
+                    const cameraPositionTarget = new THREE.Vector3();
+                    airplane.userData.cameraTarget.getWorldPosition(cameraPositionTarget);
+
+                    const lookAtTarget = new THREE.Vector3();
+                    airplane.userData.lookTarget.getWorldPosition(lookAtTarget);
+
+                    // Smoother camera follow
+                    camera.position.lerp(cameraPositionTarget, 0.05); // Slower lerp for smoother follow
+                    // Smoothly look towards the target
+                    const currentLookAt = new THREE.Vector3(); // Need a stable target to lerp towards
+                    camera.getWorldDirection( currentLookAt ); // Current direction
+                    currentLookAt.add( camera.position ); // Point in current direction
+
+                    const targetLookAt = lookAtTarget; // Target point
+                    currentLookAt.lerp(targetLookAt, 0.08); // Lerp the lookAt point
+
+                    camera.lookAt(currentLookAt);
+
+                } else {
+                    console.warn("Camera or look targets missing from airplane userData.");
+                    camera.lookAt(airplane.position);
+                }
+
+                // --- Animate Propeller ---
+                if(propeller) {
+                    propeller.rotation.x += actualSpeed * 0.5; // Rotate propeller based on speed
+                }
+
+
+            } catch (error) {
+                console.error("Error during movement update:", error);
+                // cancelAnimationFrame(animationFrameId); // Consider stopping loop on error
             }
-
-             // --- Flight Controls ---
-            // Roll (A/D) - Rotation around Z-axis (forward axis)
-            if (keys.a) {
-                airplane.rotateOnWorldAxis(new THREE.Vector3(0, 0, 1), rollSpeed);
-            }
-            if (keys.d) {
-                airplane.rotateOnWorldAxis(new THREE.Vector3(0, 0, 1), -rollSpeed);
-            }
-
-            // Pitch (ArrowUp/Down) - Rotation around X-axis (wing axis)
-            if (keys.ArrowDown) { // Pull back on stick (Nose Up)
-                airplane.rotateOnWorldAxis(new THREE.Vector3(1, 0, 0), pitchSpeed);
-            }
-            if (keys.ArrowUp) { // Push forward on stick (Nose Down)
-                airplane.rotateOnWorldAxis(new THREE.Vector3(1, 0, 0), -pitchSpeed);
-            }
-
-             // Yaw (Q/E) - Rotation around Y-axis (vertical axis)
-            if (keys.q) {
-                airplane.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), yawSpeed);
-            }
-            if (keys.e) {
-                airplane.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), -yawSpeed);
-            }
-
-            // --- Apply Movement ---
-            // Get the airplane's forward direction vector
-            const forward = new THREE.Vector3(0, 0, -1);
-            forward.applyQuaternion(airplane.quaternion);
-
-            // Move the airplane
-            airplane.position.addScaledVector(forward, speed); // Use current speed
-
-            // --- Simple Ground Collision ---
-            if (airplane.position.y < ground.position.y + 0.5) { // 0.5 is buffer
-                airplane.position.y = ground.position.y + 0.5;
-                // Optional: Reset vertical speed or make it bounce slightly
-            }
-
-            // --- Update Camera ---
-            // Get the world position of the camera target point (behind/above plane)
-            const cameraPositionTarget = new THREE.Vector3();
-            airplane.userData.cameraTarget.getWorldPosition(cameraPositionTarget);
-
-            // Get the world position of the look target point (in front of plane)
-            const lookAtTarget = new THREE.Vector3();
-            airplane.userData.lookTarget.getWorldPosition(lookAtTarget);
-
-
-            // Smoothly move the camera towards the target position (Lerp)
-            camera.position.lerp(cameraPositionTarget, 0.1); // Adjust 0.1 for faster/slower follow
-
-            // Make the camera look at the target point
-            camera.lookAt(lookAtTarget);
-
         }
 
 
         function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            if (camera && renderer) {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }
         }
 
+        let animationFrameId = null;
         function animate() {
-            requestAnimationFrame(animate);
+            animationFrameId = requestAnimationFrame(animate);
 
-            const deltaTime = clock.getDelta(); // Time since last frame
+            const deltaTime = clock.getDelta();
 
             updateMovement(deltaTime);
 
-            renderer.render(scene, camera);
-
-            // Update Info Display (Optional)
-            document.getElementById('info').textContent = `Speed: ${speed.toFixed(2)} | Altitude: ${airplane.position.y.toFixed(1)}`;
+            if (renderer && scene && camera) {
+                renderer.render(scene, camera);
+                // Update Info Display
+                const infoElement = document.getElementById('info');
+                if (infoElement && airplane) {
+                    const altitude = Math.max(0, airplane.position.y - worldBounds.yMin).toFixed(1); // Altitude above ground 0
+                    const speedKmh = (velocity.length() * 60 * 60 / 100).toFixed(0); // Approx speed in km/h (adjust scaling)
+                    infoElement.textContent = `Speed: ${speedKmh} km/h | Altitude: ${altitude} m`;
+                } else if(infoElement) {
+                    infoElement.textContent = "Initializing...";
+                }
+            }
         }
 
         // --- Start the simulation ---
-        init();
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+             console.log("DOM not ready, waiting for DOMContentLoaded.");
+        } else {
+            console.log("DOM ready, calling init directly.");
+            init();
+        }
 
     </script>
 </body>
